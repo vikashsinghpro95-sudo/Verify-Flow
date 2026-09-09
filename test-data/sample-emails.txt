@@ -1,0 +1,11 @@
+john.doe@gmail.com
+hello@yahoo.com
+admin@company.com
+test@invalid-domain-xyz.com
+info@example.com
+support@microsoft.com
+random-test-839472@example.com
+expired@example.com
+1234@tempmail.com
+johngmail.com
+  spaced-email@gmail.com  
