@@ -1,9 +1,10 @@
 import React from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
-import { LayoutDashboard, UploadCloud, History, Settings } from 'lucide-react';
+import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { LayoutDashboard, UploadCloud, History, Settings, LogOut } from 'lucide-react';
 import clsx from 'clsx';
 
-export default function DashboardLayout() {
+export default function DashboardLayout({ setAuth }) {
+  const navigate = useNavigate();
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
     { name: 'Verify Emails', path: '/upload', icon: UploadCloud },
@@ -11,17 +12,27 @@ export default function DashboardLayout() {
     { name: 'Settings', path: '/settings', icon: Settings },
   ];
 
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      setAuth(false);
+      navigate('/login');
+    } catch (e) {
+      console.error('Logout failed', e);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-gray-200">
+      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col">
         <div className="p-6">
           <h1 className="text-xl font-bold text-primary-600 flex items-center gap-2">
             <UploadCloud className="w-6 h-6" />
             VerifyFlow
           </h1>
         </div>
-        <nav className="mt-6 px-4 space-y-1">
+        <nav className="mt-6 px-4 space-y-1 flex-1">
           {navItems.map((item) => (
             <NavLink
               key={item.name}
@@ -36,6 +47,16 @@ export default function DashboardLayout() {
             </NavLink>
           ))}
         </nav>
+        
+        <div className="p-4 border-t border-gray-100">
+          <button 
+            onClick={handleLogout}
+            className="w-full flex items-center px-4 py-3 text-sm font-medium text-gray-600 rounded-xl hover:bg-red-50 hover:text-red-600 transition-colors"
+          >
+            <LogOut className="w-5 h-5 mr-3" />
+            Sign Out
+          </button>
+        </div>
       </aside>
 
       {/* Main Content */}

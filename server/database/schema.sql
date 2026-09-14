@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS verification_results (
   smtp_message TEXT,
   confidence_score INTEGER,
   status TEXT,
+  verification_level TEXT,
+  provider_blocked BOOLEAN DEFAULT 0,
   risk_reasons TEXT,
   verified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (email_id) REFERENCES emails (id) ON DELETE CASCADE

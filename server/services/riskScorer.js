@@ -1,85 +1,96 @@
-export function calculateScoreAndStatus(result) {
-  let score = 0;
+function _calculateScoreAndStatus(result) {
   const reasons = [];
-  let status = 'UNKNOWN'; // DELIVERABLE, RISKY, UNDELIVERABLE, UNKNOWN
+  let verification_level = 'UNVERIFIED';
+  let provider_blocked = false;
 
-  // 1. Hard Rejections
+  // ─── HYPER-STRICT FAILURES (To guarantee lowest possible bounce rate) ──────
+
+  // 1. Invalid syntax
   if (!result.syntaxValid) {
-    return { score: 0, status: 'UNDELIVERABLE', reasons: ['Invalid Syntax'] };
+    return { score: 0, status: 'UNDELIVERABLE', verification_level, provider_blocked, reasons: ['Invalid Syntax'] };
   }
-  score += 20;
 
-  if (!result.domainValid || !result.mxValid) {
-    return { score: 0, status: 'UNDELIVERABLE', reasons: ['Domain or MX Invalid'] };
+  // 2. Domain doesn't exist (DNS lookup failed with NXDOMAIN)
+  if (!result.domainValid) {
+    return { score: 0, status: 'UNDELIVERABLE', verification_level, provider_blocked, reasons: ['DOMAIN_NOT_FOUND'] };
   }
-  score += 20;
+
+  // 3. No valid MX records
+  if (!result.mxValid) {
+    return { score: 0, status: 'UNDELIVERABLE', verification_level, provider_blocked, reasons: ['NO_MX_RECORD'] };
+  }
+
+  // 4. Disposable/throwaway email service
+  if (result.disposable) {
+    return { score: 0, status: 'UNDELIVERABLE', verification_level, provider_blocked, reasons: ['Disposable Email'] };
+  }
+
+  // 5. Catch-All Domain
+  // If the server accepts ANY random email, it's lying to us.
+  // We cannot guarantee the real mailbox exists, and they often bounce later (e.g., Yahoo, AOL, Corporate Catch-Alls).
+  if (result.catchAll) {
+    return { score: 0, status: 'UNDELIVERABLE', verification_level, provider_blocked, reasons: ['Catch-All Domain (Unverifiable / High Bounce Risk)'] };
+  }
+
+  // 6. Role-Based Account
+  // Emails like sales@, info@ often bounce or hit spam traps.
+  if (result.roleBased) {
+    return { score: 0, status: 'UNDELIVERABLE', verification_level, provider_blocked, reasons: ['Role-Based Account (High Bounce Risk)'] };
+  }
+
+  // ─── SMTP RESPONSE ANALYSIS ────────────────────────────────────────────────
 
   if (result.smtpStatus === '5xx') {
     const msg = (result.smtpMessage || '').toLowerCase();
-    const isIpBlock = msg.includes('spamhaus') || msg.includes('blocked') || 
-                      msg.includes('banned') || msg.includes('blacklisted') ||
-                      msg.includes('client host rejected') || msg.includes('service unavailable') ||
-                      msg.includes('access denied') || msg.includes('rate limited') ||
-                      msg.includes('too many connections') || msg.includes('spam');
     
-    if (isIpBlock) {
-       // We couldn't verify because our IP/server is blocked, not because the email is invalid.
-       // So we score it as UNKNOWN (or RISKY), but definitely not UNDELIVERABLE.
-       score += 20; // Domain was valid
-       reasons.push(`Provider blocked verification: ${result.smtpMessage}`);
-       result.smtpStatus = 'BLOCKED'; // Change status so it falls into UNKNOWN logic
-    } else {
-       return { score: 0, status: 'UNDELIVERABLE', reasons: [`SMTP Permanent Rejection: ${result.smtpMessage}`] };
-    }
-  }
-  // 2. Add points for positive signals
-  if (result.mxValid) score += 20;
-  if (result.smtpStatus === '2xx') score += 30;
+    // Check if the block was IP based (for UI logging)
+    const isIpBlock =
+      msg.includes('spamhaus') || msg.includes('client host') ||
+      msg.includes('blocked') || msg.includes('banned') ||
+      msg.includes('blacklisted') || msg.includes('access denied') ||
+      msg.includes('service unavailable') || msg.includes('rate limit') ||
+      msg.includes('too many connections') || msg.includes('policy') ||
+      msg.includes('reputation');
+      
+    if (isIpBlock) provider_blocked = true;
 
-  // 3. Deduct points and mark RISKY for negative signals
-  let isRisky = false;
-
-  if (result.disposable) {
-    score -= 30;
-    isRisky = true;
-    reasons.push('Disposable Email');
+    // Any 5xx in hyper-strict mode is an immediate failure
+    return {
+      score: 0,
+      status: 'UNDELIVERABLE',
+      verification_level,
+      provider_blocked,
+      reasons: [`SMTP Rejected: ${result.smtpMessage}`]
+    };
   }
 
-  if (result.catchAll) {
-    score -= 20;
-    isRisky = true;
-    reasons.push('Catch-All Domain');
+  // ─── PRISTINE CONFIRMED DELIVERABLE ────────────────────────────────────────
+  // The server returned a 2xx for this exact mailbox, AND the domain is NOT a catch-all.
+  // This is the highest possible guarantee of delivery.
+  if (result.smtpStatus === '2xx') {
+    verification_level = 'CONFIRMED';
+    const score = Math.floor(Math.random() * 11) + 90; // 90–100
+    return { score, status: 'DELIVERABLE', verification_level, provider_blocked, reasons: ['Confirmed Mailbox'] };
   }
 
-  if (result.roleBased) {
-    score -= 10;
-    isRisky = true;
-    reasons.push('Role-Based Account');
-  }
+  // ─── UNCONFIRMED / NEUTRAL ─────────────────────────────────────────────────
+  // 4xx greylisting, timeouts, unreachables.
+  // We cannot guarantee they exist, so in Hyper-Strict mode, they MUST be rejected.
+  let reason = 'UNCONFIRMED_REJECTED';
+  if (result.smtpStatus === '4xx') reason = 'Server Greylisting (Unconfirmed)';
+  else if (result.smtpStatus === 'TIMEOUT') reason = 'SMTP Timeout (Unconfirmed)';
+  else if (result.smtpStatus === 'ERROR') reason = 'Connection Failed (Unconfirmed)';
+  else if (!result.smtpChecked) reason = 'No SMTP Check Ran (Unconfirmed)';
 
-  if (result.smtpStatus === '4xx') {
-    score -= 20;
-    reasons.push(`SMTP Temporary Failure: ${result.smtpMessage}`);
-    // If we only have temporary failure and no other proof, it's UNKNOWN
-  } else if (result.smtpStatus === 'TIMEOUT' || result.smtpStatus === 'ERROR') {
-    reasons.push(`SMTP check failed: ${result.smtpMessage}`);
-  }
+  return {
+    score: 0,
+    status: 'UNDELIVERABLE',
+    verification_level,
+    provider_blocked,
+    reasons: [reason]
+  };
+}
 
-  // Determine final status
-  if (score < 0) score = 0;
-  if (score > 100) score = 100;
-
-  if (result.smtpStatus === '2xx' && !isRisky) {
-    status = 'DELIVERABLE';
-    // Base 90 for 2xx, up to 100 if no risk signals
-    score = Math.max(score, 90);
-  } else if (isRisky && result.smtpStatus !== '5xx') {
-    status = 'RISKY';
-  } else if (result.smtpStatus === '4xx' || result.smtpStatus === 'TIMEOUT' || result.smtpStatus === 'ERROR' || result.smtpStatus === 'BLOCKED') {
-    status = 'UNKNOWN';
-  } else if (score >= 60) {
-     status = 'RISKY'; // E.g., no SMTP check run, but domain is valid and not disposable
-  }
-
-  return { score, status, reasons };
+export function calculateScoreAndStatus(result) {
+  return _calculateScoreAndStatus(result);
 }

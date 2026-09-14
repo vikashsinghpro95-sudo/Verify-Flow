@@ -1,0 +1,3 @@
+([('VerifyFlow',
+   '/Users/macbookpro/Email Validator/desktop_app/dist/VerifyFlow',
+   'EXECUTABLE')],)

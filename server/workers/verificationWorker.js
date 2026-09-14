@@ -13,7 +13,7 @@ async function processJob(jobId) {
     FROM emails e
     LEFT JOIN verification_results r ON e.id = r.email_id
     WHERE e.job_id = ? AND r.id IS NULL
-    LIMIT 50
+    LIMIT 10
   `);
 
   const emailsToProcess = emailsStmt.all(jobId);
@@ -35,32 +35,17 @@ async function processJob(jobId) {
   // Get settings for concurrency
   const concurrency = 5; // Default
 
-  const results = [];
-  for (let i = 0; i < emailsToProcess.length; i += concurrency) {
-    const chunk = emailsToProcess.slice(i, i + concurrency);
-    const promises = chunk.map(async (row) => {
-      try {
-        const res = await verifyEmail(row.original_email, { mode: 'STANDARD', smtpTimeout: 10000 });
-        return { status: 'fulfilled', value: { id: row.id, ...res } };
-      } catch (e) {
-        console.error(`Error verifying ${row.original_email}:`, e);
-        return { status: 'fulfilled', value: { id: row.id, status: 'UNKNOWN', confidenceScore: 0, error: e.message } };
-      }
-    });
-    const chunkResults = await Promise.all(promises);
-    results.push(...chunkResults);
-  }
-
-  // Save to DB in transaction
   const insertStmt = db.prepare(`
     INSERT INTO verification_results (
       email_id, syntax_valid, domain_valid, mx_valid, mx_host, disposable,
       role_based, free_provider, provider, catch_all, smtp_checked,
-      smtp_status, smtp_code, smtp_message, confidence_score, status, risk_reasons
+      smtp_status, smtp_code, smtp_message, confidence_score, status, 
+      verification_level, provider_blocked, risk_reasons
     ) VALUES (
       @id, @syntaxValid, @domainValid, @mxValid, @mxHost, @disposable,
       @roleBased, @freeProvider, @provider, @catchAll, @smtpChecked,
-      @smtpStatus, @smtpCode, @smtpMessage, @confidenceScore, @status, @riskReasons
+      @smtpStatus, @smtpCode, @smtpMessage, @confidenceScore, @status, 
+      @verificationLevel, @providerBlocked, @riskReasons
     )
   `);
 
@@ -69,14 +54,12 @@ async function processJob(jobId) {
     SET 
       processed_count = processed_count + ?,
       deliverable_count = deliverable_count + ?,
-      risky_count = risky_count + ?,
-      undeliverable_count = undeliverable_count + ?,
-      unknown_count = unknown_count + ?
+      undeliverable_count = undeliverable_count + ?
     WHERE id = ?
   `);
 
   const runTx = db.transaction((resArray) => {
-    let del = 0, risk = 0, und = 0, unk = 0;
+    let del = 0, und = 0;
     
     for (const r of resArray) {
       if (r.status === 'fulfilled') {
@@ -97,27 +80,42 @@ async function processJob(jobId) {
           smtpCode: d.smtpCode,
           smtpMessage: typeof d.smtpMessage === 'string' ? d.smtpMessage.substring(0, 200) : null,
           confidenceScore: d.confidenceScore || 0,
-          status: d.status || 'UNKNOWN',
-          riskReasons: d.riskReasons || null
+          status: d.status || 'UNDELIVERABLE',
+          verificationLevel: d.verification_level || 'UNVERIFIED',
+          providerBlocked: d.provider_blocked ? 1 : 0,
+          riskReasons: Array.isArray(d.reasons) ? d.reasons.join(', ') : (d.riskReasons || null)
         };
         insertStmt.run(mapped);
 
         if (mapped.status === 'DELIVERABLE') del++;
-        else if (mapped.status === 'RISKY') risk++;
-        else if (mapped.status === 'UNDELIVERABLE') und++;
-        else unk++;
+        else und++;
       } else {
-        unk++; // rejected promise
+        und++; // rejected promise
       }
     }
 
-    updateJobStats.run(resArray.length, del, risk, und, unk, jobId);
+    updateJobStats.run(resArray.length, del, und, jobId);
   });
 
-  try {
-    runTx(results);
-  } catch(e) {
-    console.error('DB Insert Error:', e);
+  for (let i = 0; i < emailsToProcess.length; i += concurrency) {
+    const chunk = emailsToProcess.slice(i, i + concurrency);
+    const promises = chunk.map(async (row) => {
+      try {
+        const res = await verifyEmail(row.original_email, { mode: 'STANDARD', smtpTimeout: 10000 });
+        return { status: 'fulfilled', value: { id: row.id, ...res } };
+      } catch (e) {
+        console.error(`Error verifying ${row.original_email}:`, e);
+        return { status: 'fulfilled', value: { id: row.id, status: 'UNKNOWN', confidenceScore: 0, error: e.message } };
+      }
+    });
+    const chunkResults = await Promise.all(promises);
+    
+    // Save to DB in transaction immediately after chunk finishes
+    try {
+      runTx(chunkResults);
+    } catch(e) {
+      console.error('DB Insert Error:', e);
+    }
   }
 }
 

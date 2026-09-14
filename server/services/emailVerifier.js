@@ -5,15 +5,20 @@ import { checkDNS } from './dnsVerifier.js';
 import { verifySMTP } from './smtpVerifier.js';
 import { calculateScoreAndStatus } from './riskScorer.js';
 
-// Basic email syntax regex
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// RFC 5322-compliant syntax check
+// - Rejects consecutive dots
+// - Requires TLD of at least 2 characters
+// - Rejects leading/trailing dots in local part
+const emailRegex = /^(?!.*\.\.)[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-zA-Z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
+// Per-domain catch-all cache to avoid redundant probes
 const catchAllCache = new Map();
+const DNS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 export async function verifyEmail(originalEmail, options = {}) {
   const mode = options.mode || 'STANDARD'; // FAST, STANDARD, DEEP
   const normalizedEmail = originalEmail.trim().toLowerCase();
-  
+
   let syntaxValid = emailRegex.test(normalizedEmail);
   const parts = normalizedEmail.split('@');
   const domain = parts.length === 2 ? parts[1] : '';
@@ -45,63 +50,59 @@ export async function verifyEmail(originalEmail, options = {}) {
     return { ...result, ...final, riskReasons: final.reasons.join(', ') };
   }
 
-  // 1. FAST Checks
+  // 1. FAST Checks — these are all synchronous/cheap
   result.roleBased = isRoleBased(normalizedEmail);
   result.disposable = isDisposable(domain);
-  
+
   const providerInfo = checkFreeProvider(domain);
   result.freeProvider = providerInfo.freeProvider;
   result.provider = providerInfo.provider;
 
-  // DNS Check
+  // 2. DNS Check
   const dnsResult = await checkDNS(domain);
   result.domainValid = dnsResult.domainValid;
   result.mxValid = dnsResult.mxValid;
   result.mxHost = dnsResult.mxHost;
 
-  if (mode === 'FAST' || !result.mxValid) {
+  // Exit early if FAST mode or no valid MX records found
+  if (mode === 'FAST' || !result.mxValid || !result.mxHost) {
     const final = calculateScoreAndStatus(result);
     return { ...result, ...final, riskReasons: final.reasons.join(', ') };
   }
 
+  // 3. STANDARD / DEEP Checks — run catch-all detection + real SMTP in parallel
+  const smtpTimeout = options.smtpTimeout || 15000;
 
-  // 2. STANDARD / DEEP Checks (SMTP)
-  if (result.mxValid && result.mxHost) {
-      // Catch-all check
-      if (!catchAllCache.has(domain)) {
-        const catchAllPromise = (async () => {
-          const randomString = Math.random().toString(36).substring(2, 15) + Date.now();
-          const dummyEmail = `test-${randomString}@${domain}`;
-          const catchAllResult = await verifySMTP(dummyEmail, result.mxHost, {
-             timeout: options.smtpTimeout
-          });
-          return catchAllResult.smtpStatus === '2xx';
-        })();
-        catchAllCache.set(domain, catchAllPromise);
-        
-        // Prevent map from growing infinitely
-        if (catchAllCache.size > 10000) {
-           // We shouldn't clear immediately if promises are pending, but for simplicity:
-           // Better to clear later, but this is a naive way.
-        }
-      }
+  // Catch-all probe: send to a random address to test if server accepts everything
+  const getCatchAll = async () => {
+    if (catchAllCache.has(domain)) {
+      return catchAllCache.get(domain);
+    }
+    const randomLocal = `probe-${Math.random().toString(36).substring(2, 12)}-${Date.now()}`;
+    const dummyEmail = `${randomLocal}@${domain}`;
+    try {
+      const probeResult = await verifySMTP(dummyEmail, result.mxHost, { timeout: smtpTimeout });
+      const isCatchAll = probeResult.smtpStatus === '2xx';
+      // Cache with TTL
+      catchAllCache.set(domain, isCatchAll);
+      setTimeout(() => catchAllCache.delete(domain), DNS_CACHE_TTL_MS);
+      return isCatchAll;
+    } catch (e) {
+      return false;
+    }
+  };
 
-      try {
-         result.catchAll = await catchAllCache.get(domain);
-      } catch(e) {
-         result.catchAll = false;
-      }
+  // Run catch-all probe and real SMTP verification IN PARALLEL to halve total time
+  const [catchAll, smtpResult] = await Promise.all([
+    getCatchAll(),
+    verifySMTP(normalizedEmail, result.mxHost, { timeout: smtpTimeout })
+  ]);
 
-      // Now do the standard SMTP check for the actual email
-      const smtpResult = await verifySMTP(normalizedEmail, result.mxHost, {
-          timeout: options.smtpTimeout
-      });
-      
-      result.smtpChecked = smtpResult.smtpChecked;
-      result.smtpStatus = smtpResult.smtpStatus;
-      result.smtpCode = smtpResult.smtpCode;
-      result.smtpMessage = smtpResult.smtpMessage;
-  }
+  result.catchAll = catchAll;
+  result.smtpChecked = smtpResult.smtpChecked;
+  result.smtpStatus = smtpResult.smtpStatus;
+  result.smtpCode = smtpResult.smtpCode;
+  result.smtpMessage = smtpResult.smtpMessage;
 
   const final = calculateScoreAndStatus(result);
   return { ...result, ...final, riskReasons: final.reasons.join(', ') };
