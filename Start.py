@@ -104,9 +104,9 @@ class LauncherWindow(ctk.CTk):
         
         # Open PyQtWebEngine (Chromium) to bypass Apple's strict SSL rules
         try:
-            from PyQt5.QtWidgets import QApplication, QMainWindow
-            from PyQt5.QtWebEngineWidgets import QWebEngineView
-            from PyQt5.QtCore import QUrl
+            from PyQt6.QtWidgets import QApplication, QMainWindow
+            from PyQt6.QtWebEngineWidgets import QWebEngineView
+            from PyQt6.QtCore import QUrl
 
             class WebWindow(QMainWindow):
                 def __init__(self, node_proc):
@@ -132,10 +132,10 @@ class LauncherWindow(ctk.CTk):
             qt_app = QApplication(sys.argv)
             win = WebWindow(self.node_process)
             win.show()
-            sys.exit(qt_app.exec_())
+            sys.exit(qt_app.exec())
             
         except ImportError as e:
-            print("Failed to load PyQtWebEngine:", e)
+            print("Failed to load PyQt6-WebEngine:", e)
             self.cleanup()
 
     def cleanup(self):

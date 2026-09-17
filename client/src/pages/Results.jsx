@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Download, Copy, Check } from 'lucide-react';
+import { Download, Copy, Check, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 
 export default function Results() {
@@ -9,6 +9,7 @@ export default function Results() {
   const [job, setJob] = useState(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [filter, setFilter] = useState('ALL');
 
   useEffect(() => {
     const fetchData = async () => {
@@ -32,48 +33,79 @@ export default function Results() {
     window.open(`/api/jobs/${jobId}/export?type=${type}`, '_blank');
   };
 
-  const handleCopyDeliverables = () => {
-    const deliverableEmails = results
-      .filter(r => r.status === 'DELIVERABLE')
+  const handleCopy = (statusFilter) => {
+    const emails = results
+      .filter(r => statusFilter === 'ALL' ? (r.status === 'DELIVERABLE' || r.status === 'RISKY') : r.status === statusFilter)
       .map(r => r.original_email)
       .join('\n');
     
-    if (deliverableEmails) {
-      navigator.clipboard.writeText(deliverableEmails).then(() => {
-        setCopied(true);
+    if (emails) {
+      navigator.clipboard.writeText(emails).then(() => {
+        setCopied(statusFilter);
         setTimeout(() => setCopied(false), 2000);
-      }).catch(err => {
-        console.error('Failed to copy', err);
-        alert('Failed to copy to clipboard');
-      });
+      }).catch(() => alert('Failed to copy to clipboard'));
     } else {
-      alert("No deliverable emails to copy.");
+      alert(`No ${statusFilter} emails to copy.`);
     }
   };
 
-  const getStatusColor = (status) => {
+  const getStatusStyle = (status, verificationLevel) => {
     switch(status) {
-      case 'DELIVERABLE': return 'text-green-600 bg-green-50';
-      case 'UNDELIVERABLE': return 'text-red-600 bg-red-50';
-      default: return 'text-gray-600 bg-gray-50';
+      case 'DELIVERABLE': return 'text-green-700 bg-green-100 border border-green-200';
+      case 'RISKY': return 'text-amber-700 bg-amber-50 border border-amber-200';
+      case 'UNDELIVERABLE': return 'text-red-700 bg-red-50 border border-red-200';
+      default: return 'text-gray-600 bg-gray-50 border border-gray-200';
     }
   };
+
+  const getStatusLabel = (status, verificationLevel) => {
+    if (status === 'RISKY') {
+      if (verificationLevel === 'IP_BLOCKED') return '⚠ RISKY (IP Blocked)';
+      if (verificationLevel === 'CATCH_ALL') return '⚠ RISKY (Catch-All)';
+      if (verificationLevel === 'SOFT_ROLE') return '⚠ RISKY (Role Address)';
+      if (verificationLevel === 'GREYLISTED') return '⚠ RISKY (Greylisted)';
+      if (verificationLevel === 'TIMEOUT') return '⚠ RISKY (Timeout)';
+      return '⚠ RISKY';
+    }
+    if (status === 'DELIVERABLE') {
+      if (verificationLevel === 'CONFIRMED_ROLE') return '✓ DELIVERABLE (Role)';
+      return '✓ DELIVERABLE';
+    }
+    return status || 'PENDING';
+  };
+
+  const filteredResults = filter === 'ALL'
+    ? results
+    : results.filter(r => r.status === filter);
+
+  const counts = results.reduce((acc, r) => {
+    acc[r.status] = (acc[r.status] || 0) + 1;
+    return acc;
+  }, {});
 
   return (
     <div className="space-y-8">
-      <div className="flex justify-between items-end">
+      <div className="flex justify-between items-end flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Job Results</h1>
           <p className="mt-2 text-gray-600">{job ? `Showing results for ${job.name}` : 'Loading...'}</p>
         </div>
         <div className="flex flex-wrap gap-2 justify-end">
-          <button onClick={handleCopyDeliverables} className="bg-white text-gray-700 border border-gray-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 flex items-center transition-colors">
-            {copied ? <Check className="w-4 h-4 mr-1 text-green-600" /> : <Copy className="w-4 h-4 mr-1" />}
-            {copied ? 'Copied!' : 'Copy Deliverables'}
+          <button onClick={() => handleCopy('DELIVERABLE')} className="bg-white text-gray-700 border border-gray-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 flex items-center transition-colors">
+            {copied === 'DELIVERABLE' ? <Check className="w-4 h-4 mr-1 text-green-600" /> : <Copy className="w-4 h-4 mr-1" />}
+            Copy Deliverable
+          </button>
+          <button onClick={() => handleCopy('RISKY')} className="bg-white text-amber-700 border border-amber-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-amber-50 flex items-center transition-colors">
+            {copied === 'RISKY' ? <Check className="w-4 h-4 mr-1 text-amber-600" /> : <AlertTriangle className="w-4 h-4 mr-1" />}
+            Copy Risky
           </button>
           <button onClick={() => handleExport('deliverable')} className="bg-green-50 text-green-700 border border-green-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-green-100 flex items-center">
             <Download className="w-4 h-4 mr-1" />
             Deliverable
+          </button>
+          <button onClick={() => handleExport('risky')} className="bg-amber-50 text-amber-700 border border-amber-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-amber-50 flex items-center">
+            <Download className="w-4 h-4 mr-1" />
+            Risky
           </button>
           <button onClick={() => handleExport('undeliverable')} className="bg-red-50 text-red-700 border border-red-200 px-3 py-2 rounded-lg text-sm font-medium hover:bg-red-100 flex items-center">
             <Download className="w-4 h-4 mr-1" />
@@ -84,6 +116,25 @@ export default function Results() {
             Export All
           </button>
         </div>
+      </div>
+
+      {/* Summary Counts + Filter Tabs */}
+      <div className="flex gap-3 flex-wrap">
+        {['ALL', 'DELIVERABLE', 'RISKY', 'UNDELIVERABLE'].map(s => {
+          const count = s === 'ALL' ? results.length : (counts[s] || 0);
+          const active = filter === s;
+          const colorMap = {
+            ALL: active ? 'bg-gray-900 text-white' : 'bg-white text-gray-700 border border-gray-200',
+            DELIVERABLE: active ? 'bg-green-600 text-white' : 'bg-green-50 text-green-700 border border-green-200',
+            RISKY: active ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700 border border-amber-200',
+            UNDELIVERABLE: active ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700 border border-red-200',
+          };
+          return (
+            <button key={s} onClick={() => setFilter(s)} className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${colorMap[s]}`}>
+              {s} ({count})
+            </button>
+          );
+        })}
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -98,25 +149,23 @@ export default function Results() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {results.map((r, i) => (
+              {filteredResults.map((r, i) => (
                 <tr key={i} className="hover:bg-gray-50/50">
                   <td className="px-6 py-4 text-gray-900 font-medium">{r.original_email}</td>
                   <td className="px-6 py-4">
-                    <span 
-                      className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(r.status)}`}
-                      title={r.verification_level === 'LIKELY' ? 'Recipient server could not complete SMTP verification because the verification IP was blocked by Spamhaus. Other checks passed, so this address is considered likely deliverable.' : ''}
-                    >
-                      {r.status || 'PENDING'}
-                      {r.verification_level === 'LIKELY' && '*'}
+                    <span className={`px-2 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getStatusStyle(r.status, r.verification_level)}`}>
+                      {getStatusLabel(r.status, r.verification_level)}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-gray-500">{r.confidence_score !== null ? r.confidence_score : '-'}</td>
-                  <td className="px-6 py-4 text-gray-500 truncate max-w-xs" title={r.risk_reasons}>{r.risk_reasons || '-'}</td>
+                  <td className="px-6 py-4 text-gray-500 max-w-xs" title={r.risk_reasons}>
+                    <span className="truncate block">{r.risk_reasons || '-'}</span>
+                  </td>
                 </tr>
               ))}
-              {results.length === 0 && !loading && (
+              {filteredResults.length === 0 && !loading && (
                 <tr>
-                  <td colSpan="4" className="px-6 py-8 text-center text-gray-500">No results found yet.</td>
+                  <td colSpan="4" className="px-6 py-8 text-center text-gray-500">No results found.</td>
                 </tr>
               )}
             </tbody>

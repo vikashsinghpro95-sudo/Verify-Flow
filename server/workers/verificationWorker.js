@@ -54,12 +54,13 @@ async function processJob(jobId) {
     SET 
       processed_count = processed_count + ?,
       deliverable_count = deliverable_count + ?,
-      undeliverable_count = undeliverable_count + ?
+      undeliverable_count = undeliverable_count + ?,
+      risky_count = risky_count + ?
     WHERE id = ?
   `);
 
   const runTx = db.transaction((resArray) => {
-    let del = 0, und = 0;
+    let del = 0, und = 0, risky = 0;
     
     for (const r of resArray) {
       if (r.status === 'fulfilled') {
@@ -88,13 +89,14 @@ async function processJob(jobId) {
         insertStmt.run(mapped);
 
         if (mapped.status === 'DELIVERABLE') del++;
+        else if (mapped.status === 'RISKY') risky++;
         else und++;
       } else {
         und++; // rejected promise
       }
     }
 
-    updateJobStats.run(resArray.length, del, und, jobId);
+    updateJobStats.run(resArray.length, del, und, risky, jobId);
   });
 
   for (let i = 0; i < emailsToProcess.length; i += concurrency) {

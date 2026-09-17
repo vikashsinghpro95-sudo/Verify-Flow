@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 5555;
 
 // Middleware
-app.use(helmet());
+app.use(helmet({ contentSecurityPolicy: false })); // Disabled CSP for local desktop WebEngine compatibility
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(cookieParser());
