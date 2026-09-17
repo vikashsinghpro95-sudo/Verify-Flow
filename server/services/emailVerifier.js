@@ -3,6 +3,7 @@ import { isDisposable } from './disposableChecker.js';
 import { checkFreeProvider } from './freeProviderChecker.js';
 import { checkDNS } from './dnsVerifier.js';
 import { verifySMTP } from './smtpVerifier.js';
+import { verifyM365 } from './m365Verifier.js';
 import { calculateScoreAndStatus } from './riskScorer.js';
 
 // RFC 5322-compliant syntax check
@@ -68,6 +69,21 @@ export async function verifyEmail(originalEmail, options = {}) {
   if (mode === 'FAST' || !result.mxValid || !result.mxHost) {
     const final = calculateScoreAndStatus(result);
     return { ...result, ...final, riskReasons: final.reasons.join(', ') };
+  }
+
+  // 3. Custom API Bypasses for specific hosts (Reacherhq logic)
+  const isM365 = result.mxHost.includes('mail.protection.outlook.com');
+
+  if (isM365) {
+    const m365Result = await verifyM365(normalizedEmail);
+    // If the OneDrive API confirms it exists (403), we can skip SMTP entirely!
+    if (m365Result.isDeliverable) {
+      Object.assign(result, m365Result);
+      result.catchAll = false; // Handled strictly via API
+      const final = calculateScoreAndStatus(result);
+      return { ...result, ...final, riskReasons: final.reasons.join(', ') };
+    }
+    // If it returns false (e.g. 404 because it's a shared mailbox), we fall back to SMTP.
   }
 
   // 3. STANDARD / DEEP Checks — run catch-all detection + real SMTP in parallel
