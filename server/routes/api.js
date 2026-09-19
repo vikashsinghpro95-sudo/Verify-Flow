@@ -10,6 +10,29 @@ import { verifyEmail } from '../services/emailVerifier.js';
 const router = express.Router();
 const upload = multer({ dest: '../uploads/' });
 
+// ─── Proxy Settings ──────────────────────────────────────────────────────────
+router.get('/settings/proxy', (req, res) => {
+  res.json({
+    enabled: !!(global.__smtpProxy?.host),
+    host: global.__smtpProxy?.host || '',
+    port: global.__smtpProxy?.port || 1080
+  });
+});
+
+router.post('/settings/proxy', (req, res) => {
+  const { enabled, host, port } = req.body;
+  if (enabled && host && port) {
+    global.__smtpProxy = { host, port: parseInt(port, 10) };
+    console.log(`[Proxy] SOCKS5 proxy set to ${host}:${port}`);
+    res.json({ success: true, message: `Proxy set to ${host}:${port}` });
+  } else {
+    global.__smtpProxy = null;
+    console.log('[Proxy] SOCKS5 proxy disabled');
+    res.json({ success: true, message: 'Proxy disabled' });
+  }
+});
+
+
 // Helper to process uploaded file and insert emails into DB
 async function processFileAndCreateJob(filePath, originalname) {
   let emails = new Set();
